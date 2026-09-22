@@ -1,0 +1,94 @@
+name: Build benchmark
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      cold_run:
+        description: "Disable all caches (measure worst case)"
+        type: boolean
+        default: false
+      docker:
+        description: "Also time a Docker image build (needs a Dockerfile)"
+        type: boolean
+        default: false
+
+env:
+  NEXT_TELEMETRY_DISABLED: 1
+
+jobs:
+  nextjs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Runner specs
+        run: |
+          echo "## Runner" >> "$GITHUB_STEP_SUMMARY"
+          echo "- CPUs: $(nproc)" >> "$GITHUB_STEP_SUMMARY"
+          echo "- RAM: $(free -h | awk '/Mem:/ {print $2}')" >> "$GITHUB_STEP_SUMMARY"
+          echo "- Cache: ${{ inputs.cold_run == true && 'OFF (cold)' || 'ON' }}" >> "$GITHUB_STEP_SUMMARY"
+          echo "| Phase | Seconds |" > timings.md
+          echo "|---|---|" >> timings.md
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          # Caches ~/.npm (downloaded tarballs), not node_modules.
+          cache: ${{ inputs.cold_run != true && 'npm' || '' }}
+
+      # Must run before npm ci, so hashFiles does not scan node_modules.
+      - name: Restore Next.js build cache
+        if: inputs.cold_run != true
+        uses: actions/cache@v4
+        with:
+          path: .next/cache
+          key: nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-${{ hashFiles('**/*.js', '**/*.jsx', '**/*.ts', '**/*.tsx') }}
+          restore-keys: |
+            nextjs-${{ runner.os }}-${{ hashFiles('package-lock.json') }}-
+
+      - name: Install dependencies
+        run: |
+          s=$(date +%s)
+          npm ci --no-audit --no-fund
+          echo "| npm ci | $(( $(date +%s) - s )) |" >> timings.md
+
+      - name: Typecheck
+        run: |
+          s=$(date +%s)
+          npx tsc --noEmit
+          echo "| tsc --noEmit | $(( $(date +%s) - s )) |" >> timings.md
+
+      - name: Lint
+        run: |
+          s=$(date +%s)
+          npm run lint --if-present
+          echo "| lint | $(( $(date +%s) - s )) |" >> timings.md
+
+      - name: Build
+        run: |
+          s=$(date +%s)
+          npx next build
+          echo "| next build | $(( $(date +%s) - s )) |" >> timings.md
+
+      - name: Report
+        if: always()
+        run: |
+          echo "## Timings" >> "$GITHUB_STEP_SUMMARY"
+          cat timings.md >> "$GITHUB_STEP_SUMMARY"
+          du -sh node_modules .next 2>/dev/null >> "$GITHUB_STEP_SUMMARY" || true
+
+  docker:
+    if: inputs.docker == true
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - name: Build image (no push)
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: false
+          cache-from: ${{ inputs.cold_run != true && 'type=gha' || '' }}
+          cache-to: ${{ inputs.cold_run != true && 'type=gha,mode=max' || '' }}
