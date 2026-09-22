@@ -57,8 +57,9 @@ jobs:
       - name: Typecheck
         run: |
           s=$(date +%s)
+          npx next typegen
           npx tsc --noEmit
-          echo "| tsc --noEmit | $(( $(date +%s) - s )) |" >> timings.md
+          echo "| typegen + tsc --noEmit | $(( $(date +%s) - s )) |" >> timings.md
 
       - name: Lint
         run: |
